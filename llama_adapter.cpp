@@ -170,7 +170,7 @@ generation_outputs llama_generate(const generation_inputs inputs, generation_out
         // Read search strings from config file
         std::string search_string;
         while (std::getline(config_file, search_string)) {
-            if (!search_string.empty() && search_string[0] != '#') {
+            if (!search_string.empty()) {
                 search_strings.push_back(search_string);
             }
         }
