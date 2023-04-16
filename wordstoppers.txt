@@ -1,9 +1,1 @@
-#Add words for generation to stop at in this file.>
-#It's possible to comment out the names by adding a # in front of the line.>
-#If adding a name, add a colon after the name.>
-#Program is coded to ignore lines that start with a #
-
-#YellowRoseCx:
-#Me:
-
 You:
