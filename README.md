@@ -1,4 +1,4 @@
-# koboldcpp (formerly llamacpp-for-kobold)
+# koboldcpp (wordstopper fork)
 
 A self contained distributable from Concedo that exposes llama.cpp function bindings, allowing it to be used via a simulated Kobold API endpoint. 
 
@@ -8,28 +8,38 @@ What does it mean? You get llama.cpp with a fancy UI, persistent stories, editin
 
 # Highlights
 - Now has experimental CLBlast support.
+- Now has a token stopper to speed up generation by reducing wasted tokens
+
+## Using Word Stopper
+- Add words for generation to stop at in `wordstoppers.txt`.
+- If adding a name, add a colon after the name so it doesn't stop the name incorrectly.
+```plaintext
+You:
+Me:
+### Human:
+```
+
 
 ## Usage
-- [Download the latest release here](https://github.com/LostRuins/koboldcpp/releases/latest) or clone the repo.
-- Windows binaries are provided in the form of **koboldcpp.exe**, which is a pyinstaller wrapper for a few **.dll** files and **koboldcpp.py**. If you feel concerned, you may prefer to rebuild it yourself with the provided makefiles and scripts.
-- Weights are not included, you can use the official llama.cpp `quantize.exe` to generate them from your official weight files (or download them from other places).
-- To run, execute **koboldcpp.exe** or drag and drop your quantized `ggml_model.bin` file onto the .exe, and then connect with Kobold or Kobold Lite. 
+- Download or clone the repo https://github.com/YellowRoseCx/koboldcpp-wordstopper
+- Windows users: Download the .rar file on the right side of the page under Releases then launch with "python koboldcpp.py ggml_model_name.bin"
+- Linux and OSX instructions are next paragraph.
+- To run, open command prompt or terminal in the koboldcpp-wordstopper directory then launch with "python koboldcpp.py models/ggml_model_name.bin" and then connect with Kobold or Kobold Lite. Please check `python koboldcpp.py --help` for more info
 - By default, you can connect to http://localhost:5001 
-- You can also run it using the command line `koboldcpp.exe [ggml_model.bin] [port]`. For info, please check `koboldcpp.exe --help` 
 - If you are having crashes or issues with OpenBLAS, please try the `--noblas` flag.
+- Add the names or tokens you wish to use as stoppers to the wordstoppers.txt file. If it's a chat name, make sure to add the colon afterwards.
+
 
 ## OSX and Linux
-- You will have to compile your binaries from source. A makefile is provided, simply run `make`
-- If you want you can also link your own install of OpenBLAS manually with `make LLAMA_OPENBLAS=1`
+- To link with your own install of OpenBLAS manually with `make LLAMA_OPENBLAS=1`
 - Alternatively, if you want you can also link your own install of CLBlast manually with `make LLAMA_CLBLAST=1`, for this you will need to obtain and link OpenCL and CLBlast libraries.
   - For Arch Linux: Install `cblas` and `openblas`. In the makefile, find the `ifdef LLAMA_OPENBLAS` conditional and add `-lcblas` to `LDFLAGS`.
-  - For Debian: Install `libclblast-dev` and `libopenblas-dev`.
+  - For Debian: Install `libclblast-dev` and `libopenblas-dev`. If you get a clbas_sgemm error, add -lcblas like in the Arch instructions.
 - After all binaries are built, you can run the python script with the command `koboldcpp.py [ggml_model.bin] [port]`
 
 ## Considerations
 - ZERO or MINIMAL changes as possible to parent repo files - do not move their function declarations elsewhere! We want to be able to update the repo and pull any changes automatically.
 - No dynamic memory allocation! Setup structs with FIXED (known) shapes and sizes for ALL output fields. Python will ALWAYS provide the memory, we just write to it.
-- For Windows: No installation, single file executable, (It Just Works)
 - Since v1.0.6, requires libopenblas, the prebuilt windows binaries are included in this repo. If not found, it will fall back to a mode without BLAS. 
 - Since v1.15, requires CLBlast if enabled, the prebuilt windows binaries are included in this repo. If not found, it will fall back to a mode without CLBlast. 
 - **I plan to keep backwards compatibility with ALL past llama.cpp AND alpaca.cpp models**. But you are also encouraged to reconvert/update your models if possible for best results.
@@ -41,4 +51,3 @@ What does it mean? You get llama.cpp with a fancy UI, persistent stories, editin
 
 ## Notes
 - Generation delay scales linearly with original prompt length. If OpenBLAS is enabled then prompt ingestion becomes about 2-3x faster. This is automatic on windows, but will require linking on OSX and Linux.
-- I have heard of someone claiming a false AV positive report. The exe is a simple pyinstaller bundle that includes the necessary python scripts and dlls to run. If this still concerns you, you might wish to rebuild everything from source code using the makefile, and you can rebuild the exe yourself with pyinstaller by using `make_pyinstaller.bat`
