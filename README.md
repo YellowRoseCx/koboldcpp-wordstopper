@@ -10,6 +10,16 @@ What does it mean? You get llama.cpp with a fancy UI, persistent stories, editin
 - Now has experimental CLBlast support.
 - Now has a token stopper to speed up generation by reducing wasted tokens
 
+## Using Word Stopper
+- Add words for generation to stop at in `wordstoppers.txt`.
+- If adding a name, add a colon after the name so it doesn't stop the name incorrectly.
+```plaintext
+You:
+Me:
+### Human:
+```
+
+
 ## Usage
 - Download or clone the repo https://github.com/YellowRoseCx/koboldcpp-wordstopper
 - Windows users: Download the .rar file on the right side of the page under Releases then launch with "python koboldcpp.py ggml_model_name.bin"
