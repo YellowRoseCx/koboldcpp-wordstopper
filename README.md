@@ -12,7 +12,7 @@ What does it mean? You get llama.cpp with a fancy UI, persistent stories, editin
 
 ## Usage
 - Download or clone the repo https://github.com/YellowRoseCx/koboldcpp-wordstopper
-- Windows users: launch with "python koboldcpp.py models/ggml_model_name.bin"
+- Windows users: Download the .rar file on the right side of the page under Releases then launch with "python koboldcpp.py ggml_model_name.bin"
 - Linux and OSX instructions are next paragraph.
 - To run, open command prompt or terminal in the koboldcpp-wordstopper directory then launch with "python koboldcpp.py models/ggml_model_name.bin" and then connect with Kobold or Kobold Lite. Please check `python koboldcpp.py --help` for more info
 - By default, you can connect to http://localhost:5001 
@@ -30,7 +30,6 @@ What does it mean? You get llama.cpp with a fancy UI, persistent stories, editin
 ## Considerations
 - ZERO or MINIMAL changes as possible to parent repo files - do not move their function declarations elsewhere! We want to be able to update the repo and pull any changes automatically.
 - No dynamic memory allocation! Setup structs with FIXED (known) shapes and sizes for ALL output fields. Python will ALWAYS provide the memory, we just write to it.
-- For Windows: No installation, single file executable, (It Just Works)
 - Since v1.0.6, requires libopenblas, the prebuilt windows binaries are included in this repo. If not found, it will fall back to a mode without BLAS. 
 - Since v1.15, requires CLBlast if enabled, the prebuilt windows binaries are included in this repo. If not found, it will fall back to a mode without CLBlast. 
 - **I plan to keep backwards compatibility with ALL past llama.cpp AND alpaca.cpp models**. But you are also encouraged to reconvert/update your models if possible for best results.
