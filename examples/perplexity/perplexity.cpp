@@ -2,6 +2,7 @@
 #include "llama.h"
 
 #include <cmath>
+#include <ctime>
 
 std::vector<float> softmax(const std::vector<float>& logits) {
     std::vector<float> probs(logits.size());
@@ -129,6 +130,17 @@ int main(int argc, char ** argv) {
 
         if (ctx == NULL) {
             fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, params.model.c_str());
+            return 1;
+        }
+    }
+
+    if (!params.lora_adapter.empty()) {
+        int err = llama_apply_lora_from_file(ctx,
+                                             params.lora_adapter.c_str(),
+                                             params.lora_base.empty() ? NULL : params.lora_base.c_str(),
+                                             params.n_threads);
+        if (err != 0) {
+            fprintf(stderr, "%s: error: failed to apply lora adapter\n", __func__);
             return 1;
         }
     }

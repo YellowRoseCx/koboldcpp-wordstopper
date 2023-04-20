@@ -17,6 +17,7 @@
 #include "otherarch/gptj_v2.cpp"
 #include "otherarch/gpt2_v1.cpp"
 #include "otherarch/gpt2_v2.cpp"
+#include "otherarch/rwkv.cpp"
 
 //return val: 0=fail, 1=(original ggml, alpaca), 2=(ggmf), 3=(ggjt)
 static FileFormat file_format = FileFormat::BADFORMAT;
@@ -25,6 +26,7 @@ static gptj_model_v1 model_v1;
 static gptj_model model_v2;
 static gpt2_v1_model model_gpt2_v1;
 static gpt2_model model_gpt2_v2;
+static rwkv_context * rwkv_context_v1;
 static gpt_params params;
 static int n_past = 0;
 static int n_threads = 4;
@@ -36,8 +38,8 @@ static std::vector<gpt_vocab::id> last_n_tokens;
 static std::vector<gpt_vocab::id> current_context_tokens;
 static size_t mem_per_token = 0;
 static std::vector<float> logits;
-
 static std::vector<int> smartcontext;
+static std::vector<std::string> stop_sequence;
 
 inline bool IsNanCheck(float f)
 {
@@ -59,7 +61,47 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     params.n_ctx = inputs.max_context_length;
     model_v1.hparams.n_ctx = model_v2.hparams.n_ctx = model_gpt2_v1.hparams.n_ctx = model_gpt2_v2.hparams.n_ctx = params.n_ctx;
 
-    if (file_format == FileFormat::GPT2_1)
+    if (file_format == FileFormat::RWKV_1)
+    {
+        rwkv_context_v1 = rwkv_init_from_file(modelname.c_str(), n_threads);
+
+        //setup buffers for rwkv state
+        auto padding = 512u;
+        auto statebufsiz = rwkv_get_state_buffer_element_count(rwkv_context_v1) * sizeof(float) + padding;
+        auto logitbufsiz = rwkv_get_logits_buffer_element_count(rwkv_context_v1) * sizeof(float) + padding;
+
+        printf("\nRWKV Init: State Buffer:%u, Logit Buffer:%u\n", statebufsiz, logitbufsiz);
+        rwkv_context_v1->state_out = (float *)malloc(statebufsiz);
+        rwkv_context_v1->logits_out = (float *)malloc(logitbufsiz);
+        rwkv_context_v1->state_in = nullptr;
+        n_batch = 1;
+
+        std::string word;
+        read_rwkv_vocab();
+        int vocabsiz = rwkv_vocab.size();
+        for (int i = 0; i < vocabsiz; i++) {
+            uint32_t len;
+            word = rwkv_vocab[i];
+            vocab.token_to_id[word] = i;
+            vocab.id_to_token[i] = word;
+        }
+        printf("\nRWKV Vocab: %u\n",vocabsiz);
+
+        bool testeval = rwkv_eval(rwkv_context_v1, 0, rwkv_context_v1->state_in, rwkv_context_v1->state_out, rwkv_context_v1->logits_out);
+        if(!testeval)
+        {
+            printf("\nError: RWKV Init Eval Failed!\n");
+        }
+        logits.resize(vocabsiz);
+        memcpy(logits.data(), rwkv_context_v1->logits_out, sizeof(float)*vocabsiz);
+
+        if (rwkv_context_v1 == NULL)
+        {
+            return ModelLoadResult::FAIL;
+        }
+        return ModelLoadResult::SUCCESS;
+    }
+    else if (file_format == FileFormat::GPT2_1)
     {
         ModelLoadResult res = legacy_gpt2_model_load(params.model, model_gpt2_v1, vocab, file_format);
         if(res==ModelLoadResult::FAIL)
@@ -154,6 +196,15 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
 
 generation_outputs gpttype_generate(const generation_inputs inputs, generation_outputs &output)
 {
+    stop_sequence.clear();
+    for(int x=0;x<stop_token_max;++x)
+    {
+        std::string stopper = inputs.stop_sequence[x];
+        if(stopper!="")
+        {
+            stop_sequence.push_back(stopper);
+        }
+    }
     params.prompt = inputs.prompt;
     params.seed = inputs.seed;
     params.n_predict = inputs.max_length;
@@ -181,7 +232,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
     
     // tokenize the prompt
     std::vector<gpt_vocab::id> embd_inp = ::gpt_tokenize(vocab, params.prompt);
-
+    
     //truncate to front of the prompt if its too long
     int32_t nctx = params.n_ctx;
 
@@ -200,23 +251,33 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
     std::fill(last_n_tokens.begin(), last_n_tokens.end(), 0);
     n_past = 0;
 
-    ContextFastForward(current_context_tokens, embd_inp, n_past, last_n_tokens, nctx, smartcontext, useSmartContext);
+    if (file_format == FileFormat::RWKV_1)
+    {
+        ContextFastForward(current_context_tokens, embd_inp, n_past, last_n_tokens, nctx, smartcontext, false, true);
+    }
+    else
+    {
+        ContextFastForward(current_context_tokens, embd_inp, n_past, last_n_tokens, nctx, smartcontext, useSmartContext, false);
+    }
 
     //if using BLAS and prompt is big enough, switch to single thread and use a huge batch
-    // bool approved_format = (file_format!=FileFormat::GPT2_1 && file_format!=FileFormat::GPTJ_1 && file_format!=FileFormat::GPTJ_2);
-    // bool blasmode = (approved_format && embd_inp.size() >= 32 && ggml_cpu_has_blas());
-    bool blasmode = false;
+    bool approved_format = (file_format==FileFormat::GPT2_2 || file_format==FileFormat::GPTJ_3);
+    bool blasmode = (approved_format && embd_inp.size() >= 32 && ggml_cpu_has_blas());
+    // bool blasmode = false;
     int original_batch = params.n_batch;
     int original_threads = params.n_threads;
     if (blasmode)
     {
-        params.n_batch = blasbatchsize; //received reports of 1024 and above crashing on some models
+        //for gpttype, GPT2 crashes above 256.
+        int bbs = (blasbatchsize>256?256:blasbatchsize);
+        params.n_batch = bbs; //received reports of 1024 and above crashing on some models
         params.n_threads = 1;
     }
 
     current_context_tokens.resize(n_past);
 
     int remaining_tokens = params.n_predict;
+    int stopper_unused_tokens = 0;
     int input_consumed = 0;
     std::mt19937 rng(params.seed);
     std::string concat_output = "";
@@ -242,6 +303,23 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
     else if(file_format == FileFormat::GPT2_2)
     {
         n_vocab = model_gpt2_v2.hparams.n_vocab;
+    }
+    else if(file_format == FileFormat::RWKV_1)
+    {
+        n_vocab = vocab.id_to_token.size(); //handled seperately
+        if(n_past==0)
+        {
+            rwkv_context_v1->state_in = nullptr;
+        }
+        else
+        {
+            rwkv_context_v1->state_in = rwkv_context_v1->state_out;
+            //if it's empty, push in the final previous token
+            if(embd_inp.size()==0 && current_context_tokens.size()>0)
+            {
+                embd_inp.push_back(current_context_tokens[current_context_tokens.size()-1]);
+            }
+        }
     }
     else
     {
@@ -286,9 +364,14 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
             }
            
             bool evalres = false;
-                        
-            //print_tok_vec(logits);
-            if(file_format==FileFormat::GPT2_1)
+                                   
+            if(file_format==FileFormat::RWKV_1)
+            {
+                evalres = rwkv_eval(rwkv_context_v1, embd[0], rwkv_context_v1->state_in, rwkv_context_v1->state_out, rwkv_context_v1->logits_out);
+                memcpy(logits.data(), rwkv_context_v1->logits_out, sizeof(float)*rwkv_vocab.size());
+                rwkv_context_v1->state_in = rwkv_context_v1->state_out;
+            }
+            else if(file_format==FileFormat::GPT2_1)
             {
                 evalres = legacy_gpt2_eval(model_gpt2_v1, params.n_threads, n_past, embd, logits, mem_per_token, file_format);
             }
@@ -334,14 +417,14 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
             }
 
             {
-                // set the logit of the eos token (2) to zero to avoid sampling it                
-                logits[50256] = (logits[50256]<0?logits[50256]:0);
-                
+                // set the logit of the eos token (2) to zero to avoid sampling it        
+                if(logits.size()>50256)
+                {        
+                    logits[50256] = (logits[50256]<0?logits[50256]:0);
+                }
                 //gpt2 uses negative logits, so we cant zero it
                             
                 id = gptj_sample_top_p_top_k(vocab, logits.data() + (logits.size() - n_vocab), last_n_tokens, repeat_penalty, top_k, top_p, temp, rng);
-                
-
                 last_n_tokens.erase(last_n_tokens.begin());
                 last_n_tokens.push_back(id);
                 current_context_tokens.push_back(id);
@@ -352,13 +435,24 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
 
             // decrement remaining sampling budget
             --remaining_tokens;
-            
-            for (auto id : embd) {
+
+            for (auto id : embd)
+            {
                 concat_output += vocab.id_to_token[id].c_str();
+
                 for (const auto& search_string : search_strings) {
                     if (concat_output.find(search_string) != std::string::npos) {
                         remaining_tokens = 0;
                         break; // Exit loop early if a search string is found
+
+                for (const auto &matched : stop_sequence)
+                {
+                    if (concat_output.find(matched) != std::string::npos)
+                    {
+                        stopper_unused_tokens = remaining_tokens;
+                        remaining_tokens = 0;
+                        printf("\n(Stop sequence triggered: <%s>)",matched.c_str());
+                        break;
                     }
                 }
             }
@@ -382,7 +476,8 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
     }
     time2 = timer_check();
     float pt1 = (time1*1000.0/(embd_inp_size==0?1:embd_inp_size));
-    float pt2 = (time2*1000.0/(params.n_predict==0?1:params.n_predict));
+    int realnpredict = params.n_predict-stopper_unused_tokens;
+    float pt2 = (time2*1000.0/(realnpredict==0?1:realnpredict));
     printf("\nTime Taken - Processing:%.1fs (%.0fms/T), Generation:%.1fs (%.0fms/T), Total:%.1fs", time1, pt1, time2, pt2, (time1 + time2));
     fflush(stdout);
     output.status = 1;

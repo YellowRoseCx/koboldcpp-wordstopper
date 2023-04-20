@@ -34,6 +34,7 @@ static llama_context *ctx;
 static std::vector<llama_token> last_n_tokens;
 static std::vector<llama_token> current_context_tokens;
 static std::vector<llama_token> smartcontext;
+static std::vector<std::string> stop_sequence;
 
 bool llama_load_model(const load_model_inputs inputs, FileFormat in_file_format)
 {
@@ -56,11 +57,9 @@ bool llama_load_model(const load_model_inputs inputs, FileFormat in_file_format)
     ctx_params.use_mlock = false;
 
     file_format = in_file_format;
-
    
     ctx = llama_init_from_file(modelname.c_str(), ctx_params);
     
-
     if (ctx == NULL)
     {
         fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, modelname.c_str());
@@ -81,6 +80,15 @@ bool llama_load_model(const load_model_inputs inputs, FileFormat in_file_format)
 
 generation_outputs llama_generate(const generation_inputs inputs, generation_outputs &output)
 {
+    stop_sequence.clear();
+    for(int x=0;x<stop_token_max;++x)
+    {
+        std::string stopper = inputs.stop_sequence[x];
+        if(stopper!="")
+        {
+            stop_sequence.push_back(stopper);
+        }
+    }
     params.prompt = inputs.prompt;
     params.seed = inputs.seed;
     params.n_predict = inputs.max_length;
@@ -137,7 +145,7 @@ generation_outputs llama_generate(const generation_inputs inputs, generation_out
     std::fill(last_n_tokens.begin(), last_n_tokens.end(), 0);
     n_past = 0;
 
-    ContextFastForward(current_context_tokens, embd_inp, n_past, last_n_tokens, nctx, smartcontext, useSmartContext);
+    ContextFastForward(current_context_tokens, embd_inp, n_past, last_n_tokens, nctx, smartcontext, useSmartContext,false);
 
     //if using BLAS and prompt is big enough, switch to single thread and use a huge batch
     bool blasmode = (embd_inp.size() >= 32 && ggml_cpu_has_blas());
@@ -152,6 +160,7 @@ generation_outputs llama_generate(const generation_inputs inputs, generation_out
     current_context_tokens.resize(n_past);
 
     int remaining_tokens = params.n_predict;
+    int stopper_unused_tokens = 0;
     int input_consumed = 0;
     std::mt19937 rng(params.seed);
     std::string concat_output = "";
@@ -248,11 +257,23 @@ generation_outputs llama_generate(const generation_inputs inputs, generation_out
             // decrement remaining sampling budget
             --remaining_tokens;
             //printf("\nid:%d word:%s\n",id,llama_token_to_str(ctx, id));
+
             concat_output += llama_token_to_str(ctx, id);
             for (const auto& search_string : search_strings) {
                 if (concat_output.find(search_string) != std::string::npos) {
                     remaining_tokens = 0;
                     break; // Exit loop early if a search string is found
+
+            concat_output += llama_token_to_str(ctx, id);           
+            for (const auto &matched : stop_sequence)
+            {
+                if (concat_output.find(matched) != std::string::npos)
+                {
+                    stopper_unused_tokens = remaining_tokens;
+                    remaining_tokens = 0;
+                    printf("\n(Stop sequence triggered: <%s>)",matched.c_str());
+                    break;
+
                 }
             }
         }
@@ -275,7 +296,8 @@ generation_outputs llama_generate(const generation_inputs inputs, generation_out
     }
     time2 = timer_check();
     float pt1 = (time1*1000.0/(embd_inp_size==0?1:embd_inp_size));
-    float pt2 = (time2*1000.0/(params.n_predict==0?1:params.n_predict));
+    int realnpredict = params.n_predict-stopper_unused_tokens;
+    float pt2 = (time2*1000.0/(realnpredict==0?1:realnpredict));
     printf("\nTime Taken - Processing:%.1fs (%.0fms/T), Generation:%.1fs (%.0fms/T), Total:%.1fs", time1, pt1, time2, pt2, (time1 + time2));
     fflush(stdout);
     output.status = 1;

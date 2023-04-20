@@ -9,6 +9,7 @@ What does it mean? You get llama.cpp with a fancy UI, persistent stories, editin
 # Highlights
 - Now has experimental CLBlast support.
 - Now has a token stopper to speed up generation by reducing wasted tokens
+- Now supports RWKV models WITHOUT pytorch or tokenizers! Yep, just GGML!
 
 ## Using Word Stopper
 - Add words for generation to stop at in `wordstoppers.txt`.
@@ -29,6 +30,14 @@ Me:
 - If you are having crashes or issues with OpenBLAS, please try the `--noblas` flag.
 - Add the names or tokens you wish to use as stoppers to the wordstoppers.txt file. If it's a chat name, make sure to add the colon afterwards.
 
+
+## Compiling at Windows
+- If you want to compile your binaries from source at Windows, the easiest way is:
+  - Use the latest release of w64devkit (https://github.com/skeeto/w64devkit). Be sure to use the "vanilla one", not i686 or other different stuff. If you try they will conflit with the precompiled libs!
+  - Make sure you are using the w64devkit integrated terminal, then run 'make' at the KoboldCpp source folder. This will create the .dll files.
+  - If you want to generate the .exe file, make sure you have the python module PyInstaller installed with pip ('pip install PyInstaller').
+  - Run the script make_pyinstaller.bat at a regular terminal (or Windows Explorer).
+  - The koboldcpp.exe file will be at your dist folder.
 
 ## OSX and Linux
 - To link with your own install of OpenBLAS manually with `make LLAMA_OPENBLAS=1`
@@ -51,3 +60,11 @@ Me:
 
 ## Notes
 - Generation delay scales linearly with original prompt length. If OpenBLAS is enabled then prompt ingestion becomes about 2-3x faster. This is automatic on windows, but will require linking on OSX and Linux.
+
+- Supported GGML models: 
+  - LLAMA (All versions including ggml, ggmf, ggjt, gpt4all). Supports CLBlast and OpenBLAS acceleration for all versions.
+  - GPT-2 (All versions, including legacy f16, newer format + quanitzed, cerebras) Supports OpenBLAS acceleration only for newer format. 
+  - GPT-J (All versions including legacy f16, newer format + quantized, pyg.cpp, new pygmalion, janeway etc.) Supports OpenBLAS acceleration only for newer format. 
+  - RWKV (f16 GGMF format), unaccelerated due to RNN properties.
+  - Basically every single current and historical GGML format that has ever existed should be supported, except for bloomz.cpp due to lack of demand.
+

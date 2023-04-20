@@ -1,18 +1,20 @@
 # A hacky little script from Concedo that exposes llama.cpp function bindings 
 # allowing it to be used via a simulated kobold api endpoint
-# it's not very usable as there is a fundamental flaw with llama.cpp 
-# which causes generation delay to scale linearly with original prompt length.
+# generation delay scales linearly with original prompt length.
 
 import ctypes
 import os
 import argparse
 import json, http.server, threading, socket, sys, time
 
+stop_token_max = 10
+
 class load_model_inputs(ctypes.Structure):
     _fields_ = [("threads", ctypes.c_int),
                 ("max_context_length", ctypes.c_int),
                 ("batch_size", ctypes.c_int),
                 ("f16_kv", ctypes.c_bool),
+                ("executable_path", ctypes.c_char_p),
                 ("model_filename", ctypes.c_char_p),
                 ("n_parts_overwrite", ctypes.c_int),
                 ("use_mmap", ctypes.c_bool),
@@ -29,7 +31,8 @@ class generation_inputs(ctypes.Structure):
                 ("top_k", ctypes.c_int),
                 ("top_p", ctypes.c_float),
                 ("rep_pen", ctypes.c_float),
-                ("rep_pen_range", ctypes.c_int)]
+                ("rep_pen_range", ctypes.c_int),
+                ("stop_sequence", ctypes.c_char_p * stop_token_max)]
 
 class generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
@@ -74,7 +77,7 @@ def load_model(model_filename,batch_size=8,max_context_length=512,n_parts_overwr
     inputs.max_context_length = max_context_length #initial value to use for ctx, can be overwritten
     inputs.threads = threads
     inputs.n_parts_overwrite = n_parts_overwrite
-    inputs.f16_kv = True
+    inputs.f16_kv = True    
     inputs.use_mmap = use_mmap
     inputs.use_smartcontext = use_smartcontext
     inputs.blasbatchsize = blasbatchsize
@@ -82,10 +85,11 @@ def load_model(model_filename,batch_size=8,max_context_length=512,n_parts_overwr
     if args.useclblast:
         clblastids = 100 + int(args.useclblast[0])*10 + int(args.useclblast[1])
     inputs.clblast_info = clblastids
+    inputs.executable_path = (os.path.dirname(os.path.realpath(__file__))+"/").encode("UTF-8")
     ret = handle.load_model(inputs)
     return ret
 
-def generate(prompt,max_length=20, max_context_length=512,temperature=0.8,top_k=100,top_p=0.85,rep_pen=1.1,rep_pen_range=128,seed=-1):
+def generate(prompt,max_length=20, max_context_length=512,temperature=0.8,top_k=100,top_p=0.85,rep_pen=1.1,rep_pen_range=128,seed=-1,stop_sequence=[]):
     inputs = generation_inputs()
     outputs = ctypes.create_unicode_buffer(ctypes.sizeof(generation_outputs))
     inputs.prompt = prompt.encode("UTF-8")
@@ -97,6 +101,11 @@ def generate(prompt,max_length=20, max_context_length=512,temperature=0.8,top_k=
     inputs.rep_pen = rep_pen
     inputs.rep_pen_range = rep_pen_range
     inputs.seed = seed
+    for n in range(0,stop_token_max):
+        if n >= len(stop_sequence):
+            inputs.stop_sequence[n] = "".encode("UTF-8")
+        else:
+            inputs.stop_sequence[n] = stop_sequence[n].encode("UTF-8")
     ret = handle.generate(inputs,outputs)
     if(ret.status==1):
         return ret.text.decode("UTF-8","ignore")
@@ -111,6 +120,7 @@ maxctx = 2048
 maxlen = 128
 modelbusy = False
 defaultport = 5001
+KcppVersion = "1.10"
 
 class ServerRequestHandler(http.server.SimpleHTTPRequestHandler):
     sys_version = ""
@@ -125,7 +135,7 @@ class ServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, **kwargs)
 
     def do_GET(self):
-        global maxctx, maxlen, friendlymodelname
+        global maxctx, maxlen, friendlymodelname, KcppVersion
         if self.path in ["/", "/?"] or self.path.startswith(('/?','?')): #it's possible for the root url to have ?params without /
             response_body = ""
             if self.embedded_kailite is None:
@@ -169,6 +179,18 @@ class ServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(json.dumps({"values": []}).encode())
+            return
+        
+        if self.path.endswith(('/api/v1/info/version', '/api/latest/info/version')):
+            self.send_response(200)
+            self.end_headers()           
+            self.wfile.write(json.dumps({"result":"1.2.2"}).encode())
+            return
+
+        if self.path.endswith(('/api/extra/version')):
+            self.send_response(200)
+            self.end_headers()           
+            self.wfile.write(json.dumps({"result":"KoboldCpp","version":KcppVersion}).encode())
             return
 
         self.send_response(404)
@@ -229,7 +251,8 @@ class ServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                     top_p=genparams.get('top_p', 0.85),
                     rep_pen=genparams.get('rep_pen', 1.1),
                     rep_pen_range=genparams.get('rep_pen_range', 128),
-                    seed=-1
+                    seed=-1,
+                    stop_sequence=genparams.get('stop_sequence', [])
                     )
                 print("\nOutput: " + recvtxt)
                 res = {"results": [{"text": recvtxt}]}                            
@@ -242,7 +265,8 @@ class ServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                     top_p=genparams.get('top_p', 0.85),
                     rep_pen=genparams.get('rep_pen', 1.1),
                     rep_pen_range=genparams.get('rep_pen_range', 128),
-                    seed=-1
+                    seed=-1,
+                    stop_sequence=genparams.get('stop_sequence', [])
                     )
                 print("\nOutput: " + recvtxt)
                 res = {"data": {"seqs":[recvtxt]}}
@@ -374,17 +398,17 @@ def main(args):
             root.destroy()
             if not ggml_selected_file:
                 print("\nNo ggml model file was selected. Exiting.")
-                time.sleep(1)
+                time.sleep(2)
                 sys.exit(2)
         except Exception as ex:
             print("File selection GUI unsupported. Please check command line: script.py --help")
-            time.sleep(1)
+            time.sleep(2)
             sys.exit(2)
        
 
     if not os.path.exists(ggml_selected_file):
         print(f"Cannot find model file: {ggml_selected_file}")
-        time.sleep(1)
+        time.sleep(2)
         sys.exit(2)
 
     mdl_nparts = sum(1 for n in range(1, 9) if os.path.exists(f"{ggml_selected_file}.{n}")) + 1
@@ -395,7 +419,7 @@ def main(args):
 
     if not loadok:
         print("Could not load model: " + modelname)
-        time.sleep(1)
+        time.sleep(2)
         sys.exit(3)
     try:
         basepath = os.path.abspath(os.path.dirname(__file__))
@@ -414,12 +438,17 @@ def main(args):
     else:
         epurl = f"http://{args.host}:{args.port}" + ("?streaming=1" if args.stream else "")   
     
-        
+    if args.launch:
+        try:
+            import webbrowser as wb
+            wb.open(epurl)
+        except:
+            print("--launch was set, but could not launch web browser automatically.")
     print(f"Please connect to custom endpoint at {epurl}")
     RunServerMultiThreaded(args.host, args.port, embedded_kailite)
 
 if __name__ == '__main__':
-    print("Welcome to KoboldCpp - Version 1.8.1 (wordstopper fork)") # just update version manually
+    print("Welcome to KoboldCpp - Version " + KcppVersion + " (wordstopper fork)") # just update version manually
     parser = argparse.ArgumentParser(description='Kobold llama.cpp server')
     modelgroup = parser.add_mutually_exclusive_group() #we want to be backwards compatible with the unnamed positional args
     modelgroup.add_argument("--model", help="Model file to load", nargs="?")
@@ -428,6 +457,7 @@ if __name__ == '__main__':
     portgroup.add_argument("--port", help="Port to listen on", default=defaultport, type=int, action='store')
     portgroup.add_argument("port_param", help="Port to listen on (positional)", default=defaultport, nargs="?", type=int, action='store')
     parser.add_argument("--host", help="Host IP to listen on. If empty, all routable interfaces are accepted.", default="")
+    parser.add_argument("--launch", help="Launches a web browser when load is completed.", action='store_true')
     
     #os.environ["OMP_NUM_THREADS"] = '12'
     # psutil.cpu_count(logical=False)
@@ -437,7 +467,7 @@ if __name__ == '__main__':
     default_threads = (physical_core_limit if physical_core_limit<=3 else max(3,physical_core_limit-1))
     parser.add_argument("--threads", help="Use a custom number of threads if specified. Otherwise, uses an amount based on CPU cores", type=int, default=default_threads)
     parser.add_argument("--psutil_set_threads", help="Experimental flag. If set, uses psutils to determine thread count based on physical cores.", action='store_true')
-    parser.add_argument("--blasbatchsize", help="Sets the batch size used in BLAS processing (default 512)", type=int,choices=[128,256,512,1024], default=512)
+    parser.add_argument("--blasbatchsize", help="Sets the batch size used in BLAS processing (default 512)", type=int,choices=[64,128,256,512,1024], default=512)
     parser.add_argument("--stream", help="Uses pseudo streaming", action='store_true')
     parser.add_argument("--smartcontext", help="Reserving a portion of context to try processing less frequently.", action='store_true')
     parser.add_argument("--nommap", help="If set, do not use mmap to load newer models", action='store_true')

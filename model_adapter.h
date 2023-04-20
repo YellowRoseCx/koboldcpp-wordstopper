@@ -25,7 +25,9 @@ enum FileFormat
     GPTJ_3=102, //uses new ggml lib
 
     GPT2_1=200,
-    GPT2_2=201
+    GPT2_2=201,
+
+    RWKV_1=300,
 };
 
 enum ModelLoadResult
@@ -45,10 +47,12 @@ void timer_start();
 double timer_check();
 void print_tok_vec(std::vector<int> &embd);
 void print_tok_vec(std::vector<float> &embd);
+void print_vec(std::vector<std::string> &embd);
 std::vector<int> LongestCommonSubseq(const std::vector<int> x, const std::vector<int> y);
 bool ArrStartWith(const std::vector<int> targetArray, const std::vector<int> searchSeq);
 int ArrFindIndexOf(const std::vector<int> targetArray, const std::vector<int> searchSeq);
 
 FileFormat check_file_format(const std::string & fname);
 void ContextFastForward(std::vector<int> &current_context_tokens, std::vector<int> &embd_inp,
- int &n_past, std::vector<int> &last_n_tokens, const int nctx, std::vector<int> &smartcontext, const bool useSmartContext);
+ int &n_past, std::vector<int> &last_n_tokens, const int nctx, std::vector<int> &smartcontext, 
+ const bool useSmartContext, const bool requireFullSubset);

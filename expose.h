@@ -1,11 +1,13 @@
 #pragma once
 
+const int stop_token_max = 10;
 struct load_model_inputs
 {
     const int threads;
     const int max_context_length;
     const int batch_size;
     const bool f16_kv;
+    const char *executable_path;
     const char *model_filename;
     const int n_parts_overwrite = -1;
     const bool use_mmap;
@@ -24,6 +26,7 @@ struct generation_inputs
     const float top_p;
     const float rep_pen;
     const int rep_pen_range;
+    const char * stop_sequence[stop_token_max];
 };
 struct generation_outputs
 {
@@ -31,3 +34,4 @@ struct generation_outputs
     char text[16384]; //16kb should be enough for any response
 };
 
+extern std::string executable_path;
