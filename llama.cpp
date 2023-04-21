@@ -448,7 +448,14 @@ struct llama_file_loader {
     void read_vocab() {
         vocab.id_to_token.resize(hparams.n_vocab);
 
-        for (uint32_t i = 0; i < hparams.n_vocab; i++) {
+        int32_t vocabloops = hparams.n_vocab;
+        if(vocabloops==32001 && file_version == LLAMA_FILE_VERSION_GGML)
+        {
+            printf("---\n!! WARNING: Model appears to be GPT4ALL v1 model, triggering compatibility fix !!\n---\n");
+            vocabloops -= 1;
+        }
+
+        for (uint32_t i = 0; i < vocabloops; i++) {
             uint32_t len = file.read_u32();
             std::string word = file.read_string(len);
 
@@ -1618,6 +1625,11 @@ static void llama_model_quantize_internal(const std::string & fname_inp, const s
         // quantize only 2D tensors
         quantize &= (tensor.ne.size() == 2);
 
+        // uncomment this to keep the output layer in FP16
+        //if (tensor.name == "output.weight") {
+        //    quantize = false;
+        //}
+
         enum ggml_type new_type;
         void * new_data;
         size_t new_size;
@@ -2087,7 +2099,11 @@ void llama_set_kv_cache(
                          int   n_token_count) {
     // Make sure we have the same kv cache setup
     LLAMA_ASSERT(ctx->model.kv_self.buf.size == n_size);
+    void * k_data = ctx->model.kv_self.k->data; // remember data pointers
+    void * v_data = ctx->model.kv_self.v->data; // because their value is stored in buf and overwritten by memcpy
     memcpy(ctx->model.kv_self.buf.addr, kv_cache, n_size);
+    ctx->model.kv_self.k->data = k_data; // restore correct data pointers
+    ctx->model.kv_self.v->data = v_data;
     ctx->model.kv_self.n = n_token_count;
 }
 
