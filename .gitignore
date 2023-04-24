@@ -36,6 +36,9 @@ compile_commands.json
 
 __pycache__
 
+dist/
+*.spec
+
 zig-out/
 zig-cache/
 

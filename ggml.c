@@ -152,6 +152,8 @@ inline static void* ggml_aligned_malloc(size_t size) {
 #elif defined(GGML_USE_CLBLAST)
 #include "ggml-opencl.h"
 #endif
+#include <ggml_blas_adapter.c>
+
 
 #undef MIN
 #undef MAX
@@ -511,14 +513,25 @@ static inline __m256 mul_sum_i8_pairs_float(const __m256i x, const __m256i y) {
     const __m256i ax = _mm256_sign_epi8(x, x);
     // Sign the values of the y vectors
     const __m256i sy = _mm256_sign_epi8(y, x);
+#if __AVXVNNI__
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i summed_pairs = _mm256_dpbusd_epi32(zero, ax, sy);
+    return _mm256_cvtepi32_ps(summed_pairs);
+#else
     // Perform multiplication and create 16-bit values
     const __m256i dot = _mm256_maddubs_epi16(ax, sy);
     return sum_i16_pairs_float(dot);
+#endif
 }
 
 static inline __m128i packNibbles( __m256i bytes )
 {
     // Move bits within 16-bit lanes from 0000_abcd_0000_efgh into 0000_0000_abcd_efgh
+#if __AVX512F__
+    const __m256i bytes_srli_4 = _mm256_srli_epi16(bytes, 4);   // 0000_0000_abcd_0000
+    bytes = _mm256_or_si256(bytes, bytes_srli_4);               // 0000_abcd_abcd_efgh
+    return _mm256_cvtepi16_epi8(bytes);                         // abcd_efgh
+#else
     const __m256i lowByte = _mm256_set1_epi16( 0xFF );
     __m256i high = _mm256_andnot_si256( lowByte, bytes );
     __m256i low = _mm256_and_si256( lowByte, bytes );
@@ -529,6 +542,7 @@ static inline __m128i packNibbles( __m256i bytes )
     __m128i r0 = _mm256_castsi256_si128( bytes );
     __m128i r1 = _mm256_extracti128_si256( bytes, 1 );
     return _mm_packus_epi16( r0, r1 );
+#endif
 }
 #else
 static inline __m128i packNibbles( __m128i bytes1, __m128i bytes2 )
@@ -2937,6 +2951,7 @@ static void ggml_vec_dot_q4_3_q8_0(const int n, float * restrict s, const void *
 #elif defined(__AVX2__)
     // Initialize accumulator with zeros
     __m256 acc = _mm256_setzero_ps();
+    float summs = 0.0f;
 
     // Main loop
     for (int i = 0; i < nb; i++) {
@@ -2944,9 +2959,8 @@ static void ggml_vec_dot_q4_3_q8_0(const int n, float * restrict s, const void *
         const __m128 d1 = _mm_set1_ps(GGML_FP16_TO_FP32(x[2*i + 1].d));
         const __m256 dx = _mm256_set_m128(d1, d0);
 
-        const __m128 m0 = _mm_set1_ps(GGML_FP16_TO_FP32(x[2*i + 0].m));
-        const __m128 m1 = _mm_set1_ps(GGML_FP16_TO_FP32(x[2*i + 1].m));
-        const __m256 mx = _mm256_set_m128(m1, m0);
+        summs += GGML_FP16_TO_FP32(x[2*i + 0].m) * y[i].s0
+               + GGML_FP16_TO_FP32(x[2*i + 1].m) * y[i].s1;
 
         const __m128i bx0 = bytes_from_nibbles_16(x[2*i + 0].qs);
         const __m128i bx1 = bytes_from_nibbles_16(x[2*i + 1].qs);
@@ -2955,16 +2969,12 @@ static void ggml_vec_dot_q4_3_q8_0(const int n, float * restrict s, const void *
         const __m256 dy = _mm256_broadcast_ss(&y[i].d);
         const __m256i by = _mm256_loadu_si256((const __m256i *)y[i].qs);
 
-        const __m256i syi = _mm256_maddubs_epi16(_mm256_set1_epi8(1), by);
-        const __m256 syf = sum_i16_pairs_float(syi);
-
         const __m256 q = mul_sum_i8_pairs_float(bx, by);
 
-        const __m256 sxy = _mm256_fmadd_ps(q, dx, _mm256_mul_ps(mx, syf));
-        acc = _mm256_fmadd_ps(sxy, dy, acc);
+        acc = _mm256_fmadd_ps(q, _mm256_mul_ps(dx, dy), acc);
     }
 
-    *s = hsum_float_8(acc);
+    *s = hsum_float_8(acc) + summs;
 #else
     // scalar
     float sumf = 0.0;
@@ -7567,6 +7577,7 @@ static void ggml_compute_forward_mul_mat_f32(
                 CUDA_CHECK(cudaMemcpyAsync(d, d_D, sizeof(float) * d_ne, cudaMemcpyDeviceToHost, g_cudaStream));
 #elif defined(GGML_USE_CLBLAST)
                 // zT = y * xT
+
                 ggml_cl_sgemm_wrapper(CLBlastLayoutRowMajor, CLBlastTransposeNo, CLBlastTransposeYes,
                         ne11, ne01, ne10,
                         1.0f,    y, ne10,
@@ -7575,10 +7586,12 @@ static void ggml_compute_forward_mul_mat_f32(
                         params->type);
 #else
                 cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+
                         ne11, ne01, ne10,
                         1.0f,    y, ne10,
                                  x, ne00,
-                        0.0f,    d, ne01);
+                        0.0f,    d, ne01,
+                        params->type);
 #endif
             }
         }
@@ -7814,11 +7827,12 @@ static void ggml_compute_forward_mul_mat_f16_f32(
                 float * d = (float *) ((char *) dst->data + i02*nb2 + i03*nb3);
 
                 // zT = y * xT
-                cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                do_blas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                         ne11, ne01, ne10,
                         1.0f,    y, ne10,
                                  x, ne00,
-                        0.0f,    d, ne01);
+                        0.0f,    d, ne01,
+                        params->type);
 #endif
             }
         }
@@ -8043,6 +8057,7 @@ static void ggml_compute_forward_mul_mat_q_f32(
                 dequantize_row_q_cuda(d_Q, d_X, ne01 * ne00, g_cudaStream);
                 CUDA_CHECK(cudaGetLastError());
 #else
+
 #ifndef GGML_USE_CLBLAST
                 {
                     size_t id = 0;
@@ -8052,9 +8067,11 @@ static void ggml_compute_forward_mul_mat_q_f32(
                     }
                 }
                 const float * x = wdata;
+
 #else
                 const void* x = src0->data + i03*nb03 + i02*nb02;
 #endif
+
 #endif
 
 
@@ -8085,7 +8102,8 @@ static void ggml_compute_forward_mul_mat_q_f32(
                         ne11, ne01, ne10,
                         1.0f,    y, ne10,
                                  x, ne00,
-                        0.0f,    d, ne01);
+                        0.0f,    d, ne01,
+                        type);
 #endif
             }
         }
@@ -11265,9 +11283,9 @@ void ggml_graph_print(const struct ggml_cgraph * cgraph) {
     for (int i = 0; i < cgraph->n_nodes; i++) {
         struct ggml_tensor * node = cgraph->nodes[i];
 
-        perf_total_per_op_us[node->op] += node->perf_time_us;
+        perf_total_per_op_us[node->op] += MAX(1, node->perf_time_us);
 
-        GGML_PRINT(" - %3d: [ %" PRId64 ", %" PRId64 ", %" PRId64 "] %16s %s (%3d) cpu = %7.3f / %7.3f ms, wall = %7.3f / %7.3f ms\n",
+        GGML_PRINT(" - %3d: [ %5" PRId64 ", %5" PRId64 ", %5" PRId64 "] %16s %s (%3d) cpu = %7.3f / %7.3f ms, wall = %7.3f / %7.3f ms\n",
                 i,
                 node->ne[0], node->ne[1], node->ne[2],
                 GGML_OP_LABEL[node->op], node->is_param ? "x" : node->grad ? "g" : " ", node->perf_runs,
@@ -11281,13 +11299,17 @@ void ggml_graph_print(const struct ggml_cgraph * cgraph) {
     for (int i = 0; i < cgraph->n_leafs; i++) {
         struct ggml_tensor * node = cgraph->leafs[i];
 
-        GGML_PRINT(" - %3d: [ %" PRId64 ", %" PRId64 "] %8s\n",
+        GGML_PRINT(" - %3d: [ %5" PRId64 ", %5" PRId64 "] %8s\n",
                 i,
                 node->ne[0], node->ne[1],
                 GGML_OP_LABEL[node->op]);
     }
 
     for (int i = 0; i < GGML_OP_COUNT; i++) {
+        if (perf_total_per_op_us[i] == 0) {
+            continue;
+        }
+
         GGML_PRINT("perf_total_per_op_us[%16s] = %7.3f ms\n", GGML_OP_LABEL[i], (double) perf_total_per_op_us[i] / 1000.0);
     }
 
@@ -12336,6 +12358,8 @@ int ggml_cpu_has_blas(void) {
 
 int ggml_cpu_has_cublas(void) {
 #if defined(GGML_USE_CUBLAS)
+    return 1;
+#elif defined(GGML_USE_CLBLAST)
     return 1;
 #else
     return 0;
