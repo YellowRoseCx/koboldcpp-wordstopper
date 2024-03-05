@@ -138,7 +138,7 @@ def get_amd_gfx_vers_linux():
     FetchedAMDgfxVersion = []
     try: # Get AMD ROCm GPU gfx version
         try:
-            output = run(['/opt/rocm/bin/rocminfo'], capture_output=True, text=True, check=True, encoding='utf-8').stdout
+            output = run(['rocminfo'], capture_output=True, text=True, check=True, encoding='utf-8').stdout
         except Exception as e:
             print(f"An unexpected error occurred: {e}")
             return
