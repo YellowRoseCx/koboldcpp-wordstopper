@@ -7,7 +7,7 @@ To install, either use the file "[easy_KCPP-ROCm_install.sh](https://github.com/
 git clone https://github.com/YellowRoseCx/koboldcpp-rocm.git -b main --depth 1 && \
 cd koboldcpp-rocm && \
 make LLAMA_HIPBLAS=1 -j4 && \
-./koboldcpp.py
+chmod +x koboldcpp.sh ./koboldcpp.sh
 ```
 When the KoboldCPP GUI appears, make sure to select "Use hipBLAS (ROCm)" and set GPU layers
 
