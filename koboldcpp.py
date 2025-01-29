@@ -932,6 +932,7 @@ def fetch_gpu_properties(testCL,testCU,testVK):
             faileddetectvram = True
             pass
         if len(FetchedCUdevices)==0:
+            faileddetectvram = False
             try: # Get AMD ROCm GPU names
                 output = subprocess.run(['rocminfo'], capture_output=True, text=True, check=True, encoding='utf-8').stdout
                 device_name = None
